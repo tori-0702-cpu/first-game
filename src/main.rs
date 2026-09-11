@@ -27,7 +27,7 @@ struct PlayerPhysics {
 
 #[derive(Component)]
 struct Platform {
-    _size: Vec3,
+    size: Vec3,
 }
 
 #[derive(Component)]
@@ -99,7 +99,7 @@ fn setup(
     // 地面
     commands.spawn((
         Platform {
-            _size: Vec3::new(50.0, 1.0, 50.0),
+            size: Vec3::new(50.0, 1.0, 50.0),
         },
         Mesh3d(meshes.add(Cuboid::new(50.0, 1.0, 50.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.3, 0.5, 0.3))),
@@ -120,7 +120,7 @@ fn setup(
     for pos in pole_positions {
         commands.spawn((
             Pole { size: POLE_SIZE },
-            Platform { _size: POLE_SIZE },
+            Platform { size: POLE_SIZE },
             Mesh3d(pole_mesh.clone()),
             MeshMaterial3d(pole_material.clone()),
             Transform::from_translation(pos),
@@ -223,18 +223,20 @@ fn update_wire_target(
 
     wire_state.aim_hit_point = closest_hit;
 
+    // 右クリックでトグル処理（ONなら解除、OFFかつターゲットがあれば設置）
     if mouse_button.just_pressed(MouseButton::Right) {
-        wire_state.target_point = closest_hit;
-    }
-
-    if mouse_button.just_released(MouseButton::Right) {
-        wire_state.target_point = None;
+        if wire_state.target_point.is_some() {
+            wire_state.target_point = None;
+        } else {
+            wire_state.target_point = closest_hit;
+        }
     }
 }
 
 fn apply_wire_physics(
     time: Res<Time>,
     mut player_query: Single<(&mut Transform, &mut PlayerPhysics, &WireState), With<Player>>,
+    pole_query: Query<(&Transform, &Pole), Without<Player>>,
 ) {
     let (ref mut transform, ref mut physics, wire_state) = *player_query;
 
@@ -246,10 +248,51 @@ fn apply_wire_physics(
     physics.velocity.y += GRAVITY * time.delta_secs();
     transform.translation += physics.velocity * time.delta_secs();
 
+    // 1. 地面との当たり判定
     if transform.translation.y < 1.0 {
         transform.translation.y = 1.0;
         physics.velocity.y = 0.0;
     }
+
+    // 2. 柱との当たり判定（壁判定）
+    let player_radius = PLAYER_SIZE.x * 0.5;
+    let player_half_height = PLAYER_SIZE.y * 0.5;
+
+    for (pole_transform, pole) in pole_query.iter() {
+        let pole_half = pole.size * 0.5;
+        let pole_pos = pole_transform.translation;
+
+        // Y軸の重なり判定
+        let y_overlap = (transform.translation.y - pole_pos.y).abs() < (player_half_height + pole_half.y);
+
+        if y_overlap {
+            // XZ平面での最近接点を計算
+            let closest_x = transform.translation.x.clamp(pole_pos.x - pole_half.x, pole_pos.x + pole_half.x);
+            let closest_z = transform.translation.z.clamp(pole_pos.z - pole_half.z, pole_pos.z + pole_half.z);
+
+            let diff = Vec2::new(transform.translation.x - closest_x, transform.translation.z - closest_z);
+            let dist = diff.length();
+
+            // めり込んでいる場合、外側に押し出す
+            if dist < player_radius && dist > 0.0 {
+                let normal = diff / dist;
+                let push_out = normal * (player_radius - dist);
+
+                transform.translation.x += push_out.x;
+                transform.translation.z += push_out.y;
+
+                // 柱の壁方向への速度成分を減衰
+                let vel_xz = Vec2::new(physics.velocity.x, physics.velocity.z);
+                let dot = vel_xz.dot(normal);
+                if dot < 0.0 {
+                    let new_vel = vel_xz - normal * dot;
+                    physics.velocity.x = new_vel.x;
+                    physics.velocity.z = new_vel.y;
+                }
+            }
+        }
+    }
+
     physics.velocity.x *= 0.98;
     physics.velocity.z *= 0.98;
 }
