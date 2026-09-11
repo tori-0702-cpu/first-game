@@ -9,17 +9,23 @@ const AIR_CONTROL_SPEED: f32 = 22.0;
 const GRAVITY: f32 = -25.0;
 
 const NORMAL_JUMP_FORCE: f32 = 10.0;
-const WIRE_JUMP_FORCE: f32 = 15.0;
+const WIRE_JUMP_FORCE: f32 = 18.0;
 
 const MOUSE_SENSITIVITY: f32 = 0.003;
 const CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 3.0, 10.0);
 
-const WIRE_REEL_SPEED: f32 = 35.0;
+const WIRE_REEL_SPEED: f32 = 20.0;       // 1秒間に短くなるワイヤーの長さ(m)
+const WIRE_INITIAL_BOOST: f32 = 35.0;   // ワイヤー射出時の初速（一気に加速）
+const WIRE_PULL_FORCE: f32 = 18.0;      // 継続的な引き寄せ力
+const WIRE_FORWARD_BOOST: f32 = 8.0;    // 前方推進アシスト
 const WIRE_MAX_DISTANCE: f32 = 180.0;
 const WIRE_HIT_MARGIN: Vec3 = Vec3::new(1.0, 1.0, 1.0);
 
 #[derive(Component)]
 struct Player;
+
+#[derive(Component)]
+struct Drone;
 
 #[derive(Component)]
 struct PrimaryCamera;
@@ -41,6 +47,7 @@ struct TargetObstacle {
 struct WireState {
     target_point: Option<Vec3>,
     aim_hit_point: Option<Vec3>,
+    current_length: f32,
 }
 
 #[derive(Resource)]
@@ -73,6 +80,7 @@ fn main() {
                 update_wire_target,
                 player_movement_and_jump,
                 apply_wire_physics,
+                update_drone_position,
                 draw_wire_and_marker,
                 update_camera,
                 exit_game,
@@ -98,7 +106,7 @@ fn setup(
         Transform::from_xyz(50.0, 120.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // 広げた地面 (1000 x 1000)
+    // 地面 (1000 x 1000)
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(1000.0, 1.0, 1000.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.2, 0.4, 0.2))),
@@ -108,7 +116,6 @@ fn setup(
     let table_mat = materials.add(Color::srgb(0.3, 0.6, 0.8));
     let block_mat = materials.add(Color::srgb(0.8, 0.5, 0.2));
 
-    // テーブル生成関数
     let mut spawn_table = |cmd: &mut Commands,
                            meshes: &mut ResMut<Assets<Mesh>>,
                            center: Vec3,
@@ -116,7 +123,6 @@ fn setup(
                            table_height: f32,
                            top_thickness: f32,
                            leg_thickness: f32| {
-        // 天板
         let top_size = Vec3::new(table_size.x, top_thickness, table_size.y);
         let top_pos = center + Vec3::new(0.0, table_height - top_thickness * 0.5, 0.0);
         cmd.spawn((
@@ -126,7 +132,6 @@ fn setup(
             Transform::from_translation(top_pos),
         ));
 
-        // 脚 (4本)
         let leg_h = table_height - top_thickness;
         let leg_size = Vec3::new(leg_thickness, leg_h, leg_thickness);
         let leg_mesh = meshes.add(Cuboid::from_size(leg_size));
@@ -152,38 +157,28 @@ fn setup(
         }
     };
 
-    // グリッド配置で広いエリアにテーブル群と四角いブロックを分散配置
     let grid_size = 7;
     let spacing = 60.0;
     let offset = (grid_size as f32 - 1.0) * spacing * 0.5;
 
     for i in 0..grid_size {
         for j in 0..grid_size {
-            // 初期スポーン位置（中央付近）はあける
-            if i == 3 && j == 3 {
-                continue;
-            }
+            if i == 3 && j == 3 { continue; }
 
             let base_x = (i as f32) * spacing - offset;
             let base_z = (j as f32) * spacing - offset;
-
-            // 各マス内で少し位置をバラけさせる擬似乱数的なオフセット
             let shift_x = ((i * 17 + j * 31) % 20) as f32 - 10.0;
             let shift_z = ((i * 23 + j * 13) % 20) as f32 - 10.0;
             let center = Vec3::new(base_x + shift_x, 0.0, base_z + shift_z);
 
-            // インデックスで交互・複合的にオブジェクトの種類を決定
             if (i + j) % 2 == 0 {
-                // テーブル群（2段重ねタイプあり）
                 let height = 18.0 + ((i + j * 3) % 4) as f32 * 4.0;
                 spawn_table(&mut commands, &mut meshes, center, Vec2::new(22.0, 16.0), height, 1.5, 1.5);
-
                 if (i * j) % 3 == 0 {
                     let tier2_center = Vec3::new(center.x, height, center.z);
                     spawn_table(&mut commands, &mut meshes, tier2_center, Vec2::new(14.0, 10.0), 12.0, 1.2, 1.2);
                 }
             } else {
-                // 四角いブロック（ワイヤーが狙いやすいシンプルな物体）
                 let block_w = 12.0 + ((i * 7) % 8) as f32;
                 let block_h = 15.0 + ((j * 11) % 25) as f32;
                 let block_d = 12.0 + ((i + j) % 8) as f32;
@@ -199,7 +194,7 @@ fn setup(
         }
     }
 
-    // プレイヤー
+    // 主人公
     commands.spawn((
         Player,
         PlayerPhysics {
@@ -212,6 +207,14 @@ fn setup(
         Mesh3d(meshes.add(Cuboid::from_size(PLAYER_SIZE))),
         MeshMaterial3d(materials.add(Color::srgb(0.8, 0.2, 0.2))),
         Transform::from_xyz(0.0, 2.0, 0.0),
+    ));
+
+    // 多機能ドローン
+    commands.spawn((
+        Drone,
+        Mesh3d(meshes.add(Sphere::new(0.4))),
+        MeshMaterial3d(materials.add(Color::srgb(0.1, 0.8, 0.9))),
+        Transform::from_xyz(0.0, 3.2, 0.0),
     ));
 
     // カメラ
@@ -244,9 +247,7 @@ fn rotate_camera(
     cursor_options_query: Query<&CursorOptions, With<PrimaryWindow>>,
 ) {
     if let Ok(cursor_options) = cursor_options_query.single() {
-        if cursor_options.visible {
-            return;
-        }
+        if cursor_options.visible { return; }
     }
 
     if mouse_motion.delta != Vec2::ZERO {
@@ -259,10 +260,10 @@ fn rotate_camera(
 fn update_wire_target(
     mouse_button: Res<ButtonInput<MouseButton>>,
     camera_transform: Single<&Transform, With<PrimaryCamera>>,
-    mut player_query: Single<&mut WireState, With<Player>>,
+    mut player_query: Single<(&Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
     obstacle_query: Query<(&Transform, &TargetObstacle)>,
 ) {
-    let ref mut wire_state = *player_query;
+    let (player_transform, ref mut physics, ref mut wire_state) = *player_query;
     let ray_origin = camera_transform.translation;
     let ray_dir = camera_transform.forward();
 
@@ -304,8 +305,13 @@ fn update_wire_target(
     if mouse_button.just_pressed(MouseButton::Right) {
         if wire_state.target_point.is_some() {
             wire_state.target_point = None;
-        } else {
-            wire_state.target_point = closest_hit;
+        } else if let Some(hit) = closest_hit {
+            wire_state.target_point = Some(hit);
+            wire_state.current_length = (hit - player_transform.translation).length();
+
+            // ワイヤー接続開始時に一気に初速を加算（スイングの初速を大きく）
+            let pull_dir = (hit - player_transform.translation).normalize_or_zero();
+            physics.velocity += pull_dir * WIRE_INITIAL_BOOST;
         }
     }
 }
@@ -363,27 +369,49 @@ fn player_movement_and_jump(
 
 fn apply_wire_physics(
     time: Res<Time>,
+    settings: Res<CameraSettings>,
     mut player_query: Single<(&mut Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
     obstacle_query: Query<(&Transform, &TargetObstacle), Without<Player>>,
 ) {
     let (ref mut transform, ref mut physics, ref mut wire_state) = *player_query;
-
     let is_wiring = wire_state.target_point.is_some();
 
     if let Some(target) = wire_state.target_point {
         let current_pos = transform.translation;
         let to_target = target - current_pos;
         let current_dist = to_target.length();
+        let pull_dir = to_target.normalize_or_zero();
 
-        let reel_step = WIRE_REEL_SPEED * time.delta_secs();
+        // 時間経過でワイヤーの目標長さを短くする
+        wire_state.current_length = (wire_state.current_length - WIRE_REEL_SPEED * time.delta_secs()).max(2.0);
 
-        if current_dist <= reel_step || current_dist < 1.5 {
-            transform.translation = target;
+        // ワイヤー移動中は重力を大幅に軽減（通常の15%程度）
+        physics.velocity.y += GRAVITY * 0.15 * time.delta_secs();
+
+        // ワイヤーの長さを超えそうになった場合、外側へ離れる速度成分を除去する（拘束）
+        if current_dist > wire_state.current_length {
+            let vel_dot = physics.velocity.dot(pull_dir);
+            if vel_dot < 0.0 {
+                physics.velocity -= pull_dir * vel_dot;
+            }
+            transform.translation = target - pull_dir * wire_state.current_length;
+        }
+
+        // 継続的な磁力引き寄せ力
+        physics.velocity += pull_dir * WIRE_PULL_FORCE * time.delta_secs();
+
+        // 前方への進行アシスト
+        let camera_forward = Quat::from_rotation_y(settings.yaw) * Vec3::NEG_Z;
+        physics.velocity += camera_forward * WIRE_FORWARD_BOOST * time.delta_secs();
+
+        // 空気抵抗によるゆるやかな減衰
+        physics.velocity *= 0.985;
+
+        transform.translation += physics.velocity * time.delta_secs();
+
+        // 目標地点に十分接近したら自動解除
+        if current_dist < 2.5 {
             wire_state.target_point = None;
-        } else {
-            let dir = to_target / current_dist;
-            transform.translation += dir * reel_step;
-            physics.velocity = dir * WIRE_REEL_SPEED;
         }
     } else {
         let current_gravity = if physics.is_float_mode {
@@ -406,14 +434,12 @@ fn apply_wire_physics(
 
     let mut grounded = false;
 
-    // 地面への着地判定
     if player_bottom <= 0.0 {
         transform.translation.y = player_half_height;
         physics.velocity.y = 0.0;
         grounded = true;
     }
 
-    // 障害物への衝突・着地判定
     for (obs_transform, obs) in obstacle_query.iter() {
         let obs_half = obs.size * 0.5;
         let obs_pos = obs_transform.translation;
@@ -468,19 +494,39 @@ fn apply_wire_physics(
             physics.velocity.z *= 0.1;
         }
     } else if !is_wiring && !physics.is_float_mode {
-        physics.velocity.x *= 0.98;
-        physics.velocity.z *= 0.98;
+        physics.velocity.x *= 0.985;
+        physics.velocity.z *= 0.985;
     }
+}
+
+fn update_drone_position(
+    time: Res<Time>,
+    player_query: Single<(&Transform, &WireState), With<Player>>,
+    mut drone_query: Single<&mut Transform, (With<Drone>, Without<Player>)>,
+) {
+    let (player_transform, wire_state) = *player_query;
+
+    let target_drone_pos = if wire_state.target_point.is_some() {
+        player_transform.translation + Vec3::new(0.0, 1.2, -0.3)
+    } else {
+        player_transform.translation + Vec3::new(0.8, 1.2, 0.8)
+    };
+
+    drone_query.translation = drone_query
+        .translation
+        .lerp(target_drone_pos, 15.0 * time.delta_secs());
 }
 
 fn draw_wire_and_marker(
     player_query: Single<(&Transform, &WireState), With<Player>>,
+    drone_query: Single<&Transform, With<Drone>>,
     mut gizmos: Gizmos,
 ) {
-    let (player_transform, wire_state) = *player_query;
+    let (_, wire_state) = *player_query;
+    let drone_transform = *drone_query;
 
     if let Some(target) = wire_state.target_point {
-        gizmos.line(player_transform.translation, target, Color::srgb(1.0, 0.9, 0.2));
+        gizmos.line(drone_transform.translation, target, Color::srgb(0.2, 0.9, 1.0));
         gizmos.sphere(Isometry3d::from_translation(target), 0.5, Color::srgb(1.0, 0.2, 0.2));
     } else if let Some(aim_point) = wire_state.aim_hit_point {
         gizmos.sphere(Isometry3d::from_translation(aim_point), 0.4, Color::srgba(0.2, 1.0, 0.2, 0.6));
