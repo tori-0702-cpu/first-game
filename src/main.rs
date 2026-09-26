@@ -95,6 +95,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut cursor_options_query: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    asset_server: Res<AssetServer>,
 ) {
     if let Ok(mut cursor_options) = cursor_options_query.single_mut() {
         cursor_options.visible = false;
@@ -204,8 +205,7 @@ fn setup(
             float_timer: 0.0,
         },
         WireState::default(),
-        Mesh3d(meshes.add(Cuboid::from_size(PLAYER_SIZE))),
-        MeshMaterial3d(materials.add(Color::srgb(0.8, 0.2, 0.2))),
+        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("model/test/test.glb"))),
         Transform::from_xyz(0.0, 2.0, 0.0),
     ));
 
@@ -221,7 +221,7 @@ fn setup(
     commands.spawn((
         PrimaryCamera,
         Camera3d::default(),
-        Transform::from_xyz(0.0, 5.0, 15.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 1.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
