@@ -1,5 +1,5 @@
 use bevy::app::AppExit;
-use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
@@ -12,7 +12,6 @@ const NORMAL_JUMP_FORCE: f32 = 10.0;
 const WIRE_JUMP_FORCE: f32 = 18.0;
 
 const MOUSE_SENSITIVITY: f32 = 0.003;
-const CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 3.0, 10.0);
 
 const WIRE_REEL_SPEED: f32 = 20.0;       // 1秒間に短くなるワイヤーの長さ(m)
 const WIRE_INITIAL_BOOST: f32 = 35.0;   // ワイヤー射出時の初速（一気に加速）
@@ -55,6 +54,11 @@ struct CameraSettings {
     sensitivity: f32,
     pitch: f32,
     yaw: f32,
+    // --- ズーム用パラメータ ---
+    distance: f32,      // 現在のカメラ距離
+    min_distance: f32,  // 最も近づける距離
+    max_distance: f32,  // 最も遠ざけられる距離
+    zoom_speed: f32,    // ズームの感度・速度
 }
 
 impl Default for CameraSettings {
@@ -63,6 +67,10 @@ impl Default for CameraSettings {
             sensitivity: MOUSE_SENSITIVITY,
             pitch: 0.0,
             yaw: 0.0,
+            distance: 10.0,     // 初期のカメラ距離（高さOffsetとの組み合わせ）
+            min_distance: 3.0,  // 最接近
+            max_distance: 30.0, // 最大引き
+            zoom_speed: 1.5,    // ホイール感度
         }
     }
 }
@@ -77,6 +85,7 @@ fn main() {
             (
                 toggle_cursor_lock,
                 rotate_camera,
+                zoom_camera, // <-- 追加
                 update_wire_target,
                 player_movement_and_jump,
                 apply_wire_physics,
@@ -117,7 +126,7 @@ fn setup(
     let table_mat = materials.add(Color::srgb(0.3, 0.6, 0.8));
     let block_mat = materials.add(Color::srgb(0.8, 0.5, 0.2));
 
-    let mut spawn_table = |cmd: &mut Commands,
+    let spawn_table = |cmd: &mut Commands,
                            meshes: &mut ResMut<Assets<Mesh>>,
                            center: Vec3,
                            table_size: Vec2,
@@ -206,7 +215,7 @@ fn setup(
         },
         WireState::default(),
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("model/test/test.glb"))),
-        Transform::from_xyz(0.0, 2.0, 0.0),
+        Transform::from_xyz(0.0, 0.2, 0.0)
     ));
 
     // 多機能ドローン
@@ -254,6 +263,25 @@ fn rotate_camera(
         settings.yaw -= mouse_motion.delta.x * settings.sensitivity;
         settings.pitch -= mouse_motion.delta.y * settings.sensitivity;
         settings.pitch = settings.pitch.clamp(-85.0f32.to_radians(), 85.0f32.to_radians());
+    }
+}
+
+// 追加: マウスホイール入力でカメラ距離を変更するシステム
+fn zoom_camera(
+    accumulated_scroll: Res<AccumulatedMouseScroll>,
+    mut settings: ResMut<CameraSettings>,
+    cursor_options_query: Query<&CursorOptions, With<PrimaryWindow>>,
+) {
+    // カーソルが表示されている（ロック解除中）場合はズーム操作を無効化
+    if let Ok(cursor_options) = cursor_options_query.single() {
+        if cursor_options.visible { return; }
+    }
+
+    let scroll_y = accumulated_scroll.delta.y;
+    if scroll_y != 0.0 {
+        // 前スクロール（正）で接近（距離を減らす）、後スクロール（負）で離れる（距離を増やす）
+        settings.distance -= scroll_y * settings.zoom_speed;
+        settings.distance = settings.distance.clamp(settings.min_distance, settings.max_distance);
     }
 }
 
@@ -333,6 +361,19 @@ fn player_movement_and_jump(
     let camera_yaw_rotation = Quat::from_rotation_y(settings.yaw);
     let forward = camera_yaw_rotation * Vec3::NEG_Z;
     let right = camera_yaw_rotation * Vec3::X;
+
+    if input_dir != Vec3::ZERO {
+        let move_dir = (forward * -input_dir.z + right * input_dir.x).normalize();
+
+        let target_rotation = Transform::default()
+            .looking_to(move_dir, Vec3::Y)
+            .rotation;
+
+        let rotation_speed = 15.0;
+        transform.rotation = transform
+            .rotation
+            .slerp(target_rotation, rotation_speed * time.delta_secs());
+    }
 
     if physics.is_float_mode {
         if input_dir != Vec3::ZERO {
@@ -533,6 +574,7 @@ fn draw_wire_and_marker(
     }
 }
 
+// 改修: settings.distance を使用して動的にオフセット距離を反映
 fn update_camera(
     settings: Res<CameraSettings>,
     player_query: Single<&Transform, (With<Player>, Without<PrimaryCamera>)>,
@@ -543,7 +585,9 @@ fn update_camera(
     let camera_rotation = Quat::from_euler(EulerRot::YXZ, settings.yaw, settings.pitch, 0.0);
     camera_transform.rotation = camera_rotation;
 
-    let mut desired_camera_pos = player_transform.translation + camera_rotation * CAMERA_OFFSET;
+    // 高さオフセット 3.0、距離オフセット settings.distance
+    let camera_offset = Vec3::new(0.0, 1.5, settings.distance);
+    let mut desired_camera_pos = player_transform.translation + camera_rotation * camera_offset;
 
     if desired_camera_pos.y < 0.5 {
         desired_camera_pos.y = 0.5;
