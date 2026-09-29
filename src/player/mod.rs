@@ -1,10 +1,8 @@
-use std::{f32::consts::PI, time::Duration};
-
+use std::time::Duration;
 use bevy::prelude::*;
-use bevy::animation::RepeatAnimation;
 use bevy::world_serialization::WorldInstanceReady;
 use crate::camera::CameraSettings;
-use crate::wire::WireState; // main.rs 側にある WireState を参照
+use crate::wire::WireState;
 
 // 定数定義
 pub const PLAYER_SPEED: f32 = 12.0;
@@ -34,15 +32,19 @@ struct Animations {
     graph_handle: Handle<AnimationGraph>,
 }
 
-
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, spawn_player_asset_when_ready.run_if(not(resource_exists::<Animations>)),
-            )
+        app.add_systems(
+            Update,
+            spawn_player_asset_when_ready.run_if(not(resource_exists::<Animations>)),
+        )
         .add_systems(Update, player_movement_and_jump)
-        .add_systems(Update, animate_player_by_physics.run_if(resource_exists::<Animations>));
+        .add_systems(
+            Update,
+            animate_player_by_physics.run_if(resource_exists::<Animations>),
+        );
     }
 }
 
@@ -77,6 +79,7 @@ pub fn player_movement_and_jump(
             .slerp(target_rotation, rotation_speed * time.delta_secs());
     }
 
+    // 移動と速度の処理
     if physics.is_float_mode {
         if input_dir != Vec3::ZERO {
             let move_dir = (forward * -input_dir.z + right * input_dir.x).normalize();
@@ -90,13 +93,19 @@ pub fn player_movement_and_jump(
         let move_dir = (forward * -input_dir.z + right * input_dir.x).normalize();
 
         if physics.is_grounded {
+            physics.velocity.x = move_dir.x * PLAYER_SPEED;
+            physics.velocity.z = move_dir.z * PLAYER_SPEED;
             transform.translation += move_dir * PLAYER_SPEED * time.delta_secs();
         } else {
             physics.velocity.x += move_dir.x * PLAYER_SPEED * 3.0 * time.delta_secs();
             physics.velocity.z += move_dir.z * PLAYER_SPEED * 3.0 * time.delta_secs();
         }
+    } else if physics.is_grounded {
+        physics.velocity.x = 0.0;
+        physics.velocity.z = 0.0;
     }
 
+    // ジャンプの処理
     if keyboard.just_pressed(KeyCode::Space) {
         if wire_state.target_point.is_some() {
             wire_state.target_point = None;
@@ -121,13 +130,13 @@ fn spawn_player_asset_when_ready(
         return;
     }
 
-let model = gltfs
-    .get(&model_handle.0)
-    .expect("a loaded asset should exist in the glTF assets cokkection");
+    let model = gltfs
+        .get(&model_handle.0)
+        .expect("a loaded asset should exist in the glTF assets collection");
 
     let (graph, node_indices) = AnimationGraph::from_clips([
-        model.named_animations["Idle"].clone(),
         model.named_animations["Run"].clone(),
+        model.named_animations["Idle"].clone(),
         model.named_animations["Jump"].clone(),
         model.named_animations["Hang"].clone(),
     ]);
@@ -140,20 +149,20 @@ let model = gltfs
 
     commands
         .spawn((
-                Player,
-                PlayerPhysics {
-                    velocity: Vec3::ZERO,
-                    is_grounded: true,
-                    is_float_mode:false,
-                    float_timer: 0.0,
-                },
-                WireState::default(),
-                Transform::from_xyz(0.0, 0.0, 0.0),
-                WorldAssetRoot(
-                    model.default_scene
-                        .clone()
-                        .expect("a default scene exitsts in thisfile"),
-                ),
+            Player,
+            PlayerPhysics {
+                velocity: Vec3::ZERO,
+                is_grounded: true,
+                is_float_mode: false,
+                float_timer: 0.0,
+            },
+            WireState::default(),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            WorldAssetRoot(
+                model.default_scene
+                    .clone()
+                    .expect("a default scene exists in this file"),
+            ),
         ))
         .observe(setup_scene);
 }
@@ -180,36 +189,29 @@ fn setup_scene(
 fn animate_player_by_physics(
     mut physics_query: Query<(&PlayerPhysics, &mut AnimationPlayer, &mut AnimationTransitions)>,
     animations: Res<Animations>,
-    mut current_animation: Local<Option<usize>>, // 現在再生中のアニメーションを記憶
+    mut current_animation: Local<Option<usize>>,
 ) {
     for (physics, mut player, mut transitions) in &mut physics_query {
-        // 1. どの状況でどのアニメーションを流すかの条件分岐（優先度順）
         let target_animation = if physics.is_float_mode {
-            // 浮遊モード中のアニメーション（なければ一旦Jumpなどで代用）
-            3 
+            3
         } else if !physics.is_grounded {
-            // 空中にいる（ジャンプ・落下中）
             2
         } else if physics.velocity.length_squared() > 0.01 {
-            // 地地にいて、動いている（速度がある）
             1
         } else {
-            // 地地にいて、止まっている
             0
         };
 
-        // 2. 現在再生したいアニメーションが、すでに再生中のものと違う場合だけ切り替える
         if *current_animation != Some(target_animation) {
             *current_animation = Some(target_animation);
 
-            // 0.25秒（250ミリ秒）かけて滑らかに次のアニメーションへ繋ぐ
             transitions
                 .play(
                     &mut player,
                     animations.animations[target_animation],
                     Duration::from_millis(250),
                 )
-                .repeat(); // ループ再生
+                .repeat();
         }
     }
 }
