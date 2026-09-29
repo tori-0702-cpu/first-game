@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use crate::camera::PrimaryCamera;
 use crate::drone::Drone;
-use crate::player::{Player, PlayerPhysics, PLAYER_SIZE};
+use crate::player::{Player, PlayerPhysics, MODEL_PATH, Model};
 use crate::wire::{WireState, TargetObstacle};
 
 pub struct WorldPlugin;
@@ -18,6 +18,8 @@ pub fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>
 ) {
+
+    commands.insert_resource(Model(asset_server.load(MODEL_PATH)));
     // ライトの設定
     commands.spawn((
             DirectionalLight::default(),
@@ -33,19 +35,6 @@ pub fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // プレイヤーの生成
-    commands.spawn((
-        Player,
-        PlayerPhysics {
-            velocity: Vec3::ZERO,
-            is_grounded: true,
-            is_float_mode: false,
-            float_timer: 0.0,
-        },
-        WireState::default(),
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("model/test/test.glb"))),
-        Transform::from_xyz(0.0, 0.2, 0.0)
-    ));
 
     // カメラの生成
     commands.spawn((

@@ -25,3 +25,4 @@ fn main() {
         .add_plugins(InputPlugin)
         .run();
 }
+
