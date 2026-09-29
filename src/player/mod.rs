@@ -55,12 +55,9 @@ pub fn player_movement_and_jump(
     mut player_query: Single<(&mut Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
 ) {
     let (ref mut transform, ref mut physics, ref mut wire_state) = *player_query;
-
-    let mut input_dir = Vec3::ZERO;
-    if keyboard.pressed(KeyCode::KeyW) { input_dir.z -= 1.0; }
-    if keyboard.pressed(KeyCode::KeyS) { input_dir.z += 1.0; }
-    if keyboard.pressed(KeyCode::KeyA) { input_dir.x -= 1.0; }
-    if keyboard.pressed(KeyCode::KeyD) { input_dir.x += 1.0; }
+    
+    let input = crate::input::get_player_input(&keyboard);
+    let input_dir =input.move_dir;
 
     let camera_yaw_rotation = Quat::from_rotation_y(settings.yaw);
     let forward = camera_yaw_rotation * Vec3::NEG_Z;
@@ -71,9 +68,10 @@ pub fn player_movement_and_jump(
 
         let target_rotation = Transform::default()
             .looking_to(move_dir, Vec3::Y)
-            .rotation;
+            .rotation
+            *Quat::from_rotation_y(std::f32::consts::PI);
 
-        let rotation_speed = 15.0;
+        let rotation_speed = 10.0;
         transform.rotation = transform
             .rotation
             .slerp(target_rotation, rotation_speed * time.delta_secs());
@@ -106,7 +104,7 @@ pub fn player_movement_and_jump(
     }
 
     // ジャンプの処理
-    if keyboard.just_pressed(KeyCode::Space) {
+    if input.jump_just_pressed {
         if wire_state.target_point.is_some() {
             wire_state.target_point = None;
             physics.velocity.y = WIRE_JUMP_FORCE;
@@ -157,7 +155,7 @@ fn spawn_player_asset_when_ready(
                 float_timer: 0.0,
             },
             WireState::default(),
-            Transform::from_xyz(0.0, 0.0, 0.0),
+            Transform::from_xyz(0.0, -0.3, 0.0),
             WorldAssetRoot(
                 model.default_scene
                     .clone()
