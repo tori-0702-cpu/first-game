@@ -1,8 +1,10 @@
 use std::time::Duration;
 use bevy::prelude::*;
-use bevy::world_serialization::WorldInstanceReady;
 use crate::camera::CameraSettings;
 use crate::wire::WireState;
+
+// 新しいアニメーションファイルを読み込む
+pub mod animation;
 
 // 定数定義
 pub const PLAYER_SPEED: f32 = 12.0;
@@ -27,24 +29,22 @@ pub struct PlayerPhysics {
 }
 
 #[derive(Resource)]
-struct Animations {
-    animations: Vec<AnimationNodeIndex>,
-    graph_handle: Handle<AnimationGraph>,
+pub struct Animations {
+    pub animations: Vec<AnimationNodeIndex>,
+    pub graph_handle: Handle<AnimationGraph>,
 }
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            spawn_player_asset_when_ready.run_if(not(resource_exists::<Animations>)),
-        )
-        .add_systems(Update, player_movement_and_jump)
-        .add_systems(
-            Update,
-            animate_player_by_physics.run_if(resource_exists::<Animations>),
-        );
+        // アニメーション用のプラグインも一緒にここで登録します
+        app.add_plugins(animation::PlayerAnimationPlugin)
+            .add_systems(
+                Update,
+                spawn_player_asset_when_ready.run_if(not(resource_exists::<Animations>)),
+            )
+            .add_systems(Update, player_movement_and_jump);
     }
 }
 
@@ -55,9 +55,9 @@ pub fn player_movement_and_jump(
     mut player_query: Single<(&mut Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
 ) {
     let (ref mut transform, ref mut physics, ref mut wire_state) = *player_query;
-    
+
     let input = crate::input::get_player_input(&keyboard);
-    let input_dir =input.move_dir;
+    let input_dir = input.move_dir;
 
     let camera_yaw_rotation = Quat::from_rotation_y(settings.yaw);
     let forward = camera_yaw_rotation * Vec3::NEG_Z;
@@ -68,16 +68,15 @@ pub fn player_movement_and_jump(
 
         let target_rotation = Transform::default()
             .looking_to(move_dir, Vec3::Y)
-            .rotation
-            *Quat::from_rotation_y(std::f32::consts::PI);
+            .rotation 
+            * Quat::from_rotation_y(std::f32::consts::PI);
 
-        let rotation_speed = 10.0;
+        let rotation_speed = 15.0;
         transform.rotation = transform
             .rotation
             .slerp(target_rotation, rotation_speed * time.delta_secs());
     }
 
-    // 移動と速度の処理
     if physics.is_float_mode {
         if input_dir != Vec3::ZERO {
             let move_dir = (forward * -input_dir.z + right * input_dir.x).normalize();
@@ -103,7 +102,6 @@ pub fn player_movement_and_jump(
         physics.velocity.z = 0.0;
     }
 
-    // ジャンプの処理
     if input.jump_just_pressed {
         if wire_state.target_point.is_some() {
             wire_state.target_point = None;
@@ -133,8 +131,8 @@ fn spawn_player_asset_when_ready(
         .expect("a loaded asset should exist in the glTF assets collection");
 
     let (graph, node_indices) = AnimationGraph::from_clips([
-        model.named_animations["Run"].clone(),
         model.named_animations["Idle"].clone(),
+        model.named_animations["Run"].clone(),
         model.named_animations["Jump"].clone(),
         model.named_animations["Hang"].clone(),
     ]);
@@ -155,62 +153,14 @@ fn spawn_player_asset_when_ready(
                 float_timer: 0.0,
             },
             WireState::default(),
-            Transform::from_xyz(0.0, -0.3, 0.0),
+            Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
             WorldAssetRoot(
                 model.default_scene
                     .clone()
                     .expect("a default scene exists in this file"),
             ),
         ))
-        .observe(setup_scene);
-}
-
-fn setup_scene(
-    _ready: On<WorldInstanceReady>,
-    mut commands: Commands,
-    animations: Res<Animations>,
-    model: Single<(Entity, &mut AnimationPlayer)>,
-) {
-    let (entity, mut model) = model.into_inner();
-    let mut transitions = AnimationTransitions::new();
-
-    transitions
-        .play(&mut model, animations.animations[0], Duration::ZERO)
-        .repeat();
-
-    commands
-        .entity(entity)
-        .insert(AnimationGraphHandle(animations.graph_handle.clone()))
-        .insert(transitions);
-}
-
-fn animate_player_by_physics(
-    mut physics_query: Query<(&PlayerPhysics, &mut AnimationPlayer, &mut AnimationTransitions)>,
-    animations: Res<Animations>,
-    mut current_animation: Local<Option<usize>>,
-) {
-    for (physics, mut player, mut transitions) in &mut physics_query {
-        let target_animation = if physics.is_float_mode {
-            3
-        } else if !physics.is_grounded {
-            2
-        } else if physics.velocity.length_squared() > 0.01 {
-            1
-        } else {
-            0
-        };
-
-        if *current_animation != Some(target_animation) {
-            *current_animation = Some(target_animation);
-
-            transitions
-                .play(
-                    &mut player,
-                    animations.animations[target_animation],
-                    Duration::from_millis(250),
-                )
-                .repeat();
-        }
-    }
+        // 修正点：animation.rs に引っ越した初期化関数を呼び出します
+        .observe(animation::setup_player_scene);
 }
 
