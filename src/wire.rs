@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use avian3d::prelude::*; // 【追加】Avian3Dの物理コンポーネントをインポート
 use crate::camera::{CameraSettings, PrimaryCamera};
 use crate::player::{Player, PlayerPhysics};
 use crate::drone::Drone;
@@ -10,8 +11,6 @@ pub const WIRE_PULL_FORCE: f32 = 18.0;
 pub const WIRE_FORWARD_BOOST: f32 = 8.0;
 pub const WIRE_MAX_DISTANCE: f32 = 180.0;
 pub const WIRE_HIT_MARGIN: Vec3 = Vec3::new(1.0, 1.0, 1.0);
-pub const GRAVITY: f32 = -25.0;
-pub const PLAYER_SIZE: Vec3 = Vec3::new(1.0, 2.0, 1.0);
 
 // コンポーネント定義
 #[derive(Component)]
@@ -43,11 +42,12 @@ impl Plugin for WirePlugin {
 
 pub fn update_wire_target(
     mouse_button: Res<ButtonInput<MouseButton>>,
-        camera_transform: Single<&Transform, With<PrimaryCamera>>,
-    mut player_query: Single<(&Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
+    camera_transform: Single<&Transform, With<PrimaryCamera>>,
+    // 【修正】手動計算を排し、Avian3DのLinearVelocityを引数に追加
+    mut player_query: Single<(&Transform, &mut LinearVelocity, &mut PlayerPhysics, &mut WireState), With<Player>>,
     obstacle_query: Query<(&Transform, &TargetObstacle)>,
 ) {
-    let (player_transform, ref mut physics, ref mut wire_state) = *player_query;
+    let (player_transform, ref mut linear_velocity, ref mut physics, ref mut wire_state) = *player_query;
     let ray_origin = camera_transform.translation;
     let ray_dir = camera_transform.forward();
 
@@ -94,7 +94,8 @@ pub fn update_wire_target(
             wire_state.current_length = (hit - player_transform.translation).length();
 
             let pull_dir = (hit - player_transform.translation).normalize_or_zero();
-            physics.velocity += pull_dir * WIRE_INITIAL_BOOST;
+            // 【修正】手動物理から Avian3D のリニアベロシティに初期ブーストを加算
+            linear_velocity.0 += pull_dir * WIRE_INITIAL_BOOST;
         }
     }
 }
@@ -102,10 +103,10 @@ pub fn update_wire_target(
 pub fn apply_wire_physics(
     time: Res<Time>,
     settings: Res<CameraSettings>,
-    mut player_query: Single<(&mut Transform, &mut PlayerPhysics, &mut WireState), With<Player>>,
-    obstacle_query: Query<(&Transform, &TargetObstacle), Without<Player>>,
+    // 【修正】手動座標移動を撤廃し、Avian3D の LinearVelocity に一本化
+    mut player_query: Single<(&Transform, &mut LinearVelocity, &mut PlayerPhysics, &mut WireState), With<Player>>,
 ) {
-    let (ref mut transform, ref mut physics, ref mut wire_state) = *player_query;
+    let (transform, ref mut linear_velocity, ref mut physics, ref mut wire_state) = *player_query;
     let is_wiring = wire_state.target_point.is_some();
 
     if let Some(target) = wire_state.target_point {
@@ -114,109 +115,57 @@ pub fn apply_wire_physics(
         let current_dist = to_target.length();
         let pull_dir = to_target.normalize_or_zero();
 
+        // 巻き取りによる最大射程を徐々に収縮
         wire_state.current_length = (wire_state.current_length - WIRE_REEL_SPEED * time.delta_secs()).max(2.0);
-        physics.velocity.y += GRAVITY * 0.15 * time.delta_secs();
 
+        // 【修正】ワイヤーを限界まで引っ張ったときの挙動
         if current_dist > wire_state.current_length {
-            let vel_dot = physics.velocity.dot(pull_dir);
+            let vel_dot = linear_velocity.dot(pull_dir);
             if vel_dot < 0.0 {
-                physics.velocity -= pull_dir * vel_dot;
+                linear_velocity.0 -= pull_dir * vel_dot;
             }
-            transform.translation = target - pull_dir * wire_state.current_length;
         }
 
-        physics.velocity += pull_dir * WIRE_PULL_FORCE * time.delta_secs();
+        // ワイヤーによる牽引力
+        linear_velocity.0 += pull_dir * WIRE_PULL_FORCE * time.delta_secs();
+        
+        // カメラの向きへの前方ブースト
         let camera_forward = Quat::from_rotation_y(settings.yaw) * Vec3::NEG_Z;
-        physics.velocity += camera_forward * WIRE_FORWARD_BOOST * time.delta_secs();
-        physics.velocity *= 0.985;
-        transform.translation += physics.velocity * time.delta_secs();
+        linear_velocity.0 += camera_forward * WIRE_FORWARD_BOOST * time.delta_secs();
+        
+        // 空気抵抗
+        linear_velocity.0 *= 0.985;
 
         if current_dist < 2.5 {
             wire_state.target_point = None;
         }
     } else {
-        let current_gravity = if physics.is_float_mode {
+        // 浮遊状態のタイマー管理のみ行う
+        if physics.is_float_mode {
             physics.float_timer -= time.delta_secs();
             if physics.float_timer <= 0.0 {
                 physics.is_float_mode = false;
             }
-            GRAVITY * 0.25
-        } else {
-            GRAVITY
-        };
-
-        physics.velocity.y += current_gravity * time.delta_secs();
-        transform.translation += physics.velocity * time.delta_secs();
-    }
-
-    let player_radius = PLAYER_SIZE.x * 0.5;
-    let player_half_height = PLAYER_SIZE.y * 0.5;
-    let player_bottom = transform.translation.y - player_half_height;
-
-    let mut grounded = false;
-
-    if player_bottom <= 0.0 {
-        transform.translation.y = player_half_height;
-        physics.velocity.y = 0.0;
-        grounded = true;
-    }
-
-    for (obs_transform, obs) in obstacle_query.iter() {
-        let obs_half = obs.size * 0.5;
-        let obs_pos = obs_transform.translation;
-
-        let in_xz = (transform.translation.x - obs_pos.x).abs() <= (obs_half.x + player_radius)
-            && (transform.translation.z - obs_pos.z).abs() <= (obs_half.z + player_radius);
-
-        if in_xz {
-            let obs_top = obs_pos.y + obs_half.y;
-            let prev_bottom = player_bottom - physics.velocity.y * time.delta_secs();
-
-            if physics.velocity.y <= 0.0 && prev_bottom >= obs_top - 0.5 && player_bottom <= obs_top {
-                transform.translation.y = obs_top + player_half_height;
-                physics.velocity.y = 0.0;
-                grounded = true;
-                continue;
-            }
-
-            let y_overlap = (transform.translation.y - obs_pos.y).abs() < (player_half_height + obs_half.y - 0.1);
-            if y_overlap {
-                let closest_x = transform.translation.x.clamp(obs_pos.x - obs_half.x, obs_pos.x + obs_half.x);
-                let closest_z = transform.translation.z.clamp(obs_pos.z - obs_half.z, obs_pos.z + obs_half.z);
-
-                let diff = Vec2::new(transform.translation.x - closest_x, transform.translation.z - closest_z);
-                let dist = diff.length();
-
-                if dist < player_radius && dist > 0.0 {
-                    let normal = diff / dist;
-                    let push_out = normal * (player_radius - dist);
-
-                    transform.translation.x += push_out.x;
-                    transform.translation.z += push_out.y;
-
-                    let vel_xz = Vec2::new(physics.velocity.x, physics.velocity.z);
-                    let dot = vel_xz.dot(normal);
-                    if dot < 0.0 {
-                        let new_vel = vel_xz - normal * dot;
-                        physics.velocity.x = new_vel.x;
-                        physics.velocity.z = new_vel.y;
-                    }
-                }
-            }
         }
     }
 
-    physics.is_grounded = grounded;
+    // =========================================================================
+    // ❌ 【手動のコライダー・重力・接地判定計算を完全削除】
+    // 
+    // 地面(0.0)や障害物のループによる手動押し出し（インパルス）は全て削除しました。
+    // 重力落下、床や障害物との衝突・侵入防止は Avian3D が自動計算します。
+    // =========================================================================
 
-    if grounded {
+    // 接地時の処理
+    if physics.is_grounded {
         physics.is_float_mode = false;
         if !is_wiring {
-            physics.velocity.x *= 0.1;
-            physics.velocity.z *= 0.1;
+            linear_velocity.x *= 0.1;
+            linear_velocity.z *= 0.1;
         }
     } else if !is_wiring && !physics.is_float_mode {
-        physics.velocity.x *= 0.985;
-        physics.velocity.z *= 0.985;
+        linear_velocity.x *= 0.985;
+        linear_velocity.z *= 0.985;
     }
 }
 
@@ -225,7 +174,7 @@ pub fn draw_wire_and_marker(
     drone_query: Single<&Transform, With<Drone>>,
     mut gizmos: Gizmos,
 ) {
-    let (_, wire_state) = *player_query;
+    let (player_transform, wire_state) = *player_query;
     let drone_transform = *drone_query;
 
     if let Some(target) = wire_state.target_point {
@@ -235,3 +184,4 @@ pub fn draw_wire_and_marker(
         gizmos.sphere(Isometry3d::from_translation(aim_point), 0.4, Color::srgba(0.2, 1.0, 0.2, 0.6));
     }
 }
+

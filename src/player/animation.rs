@@ -1,5 +1,6 @@
 use std::time::Duration;
 use bevy::prelude::*;
+use avian3d::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use crate::player::{Animations, PlayerPhysics}; // mod.rs から必要なデータをインポート
 
@@ -36,19 +37,18 @@ pub fn setup_player_scene(
         .insert(transitions);
 }
 
-/// 物理状態（PlayerPhysics）を「覗き見」して、アニメーションの見た目を合わせるシステム
 fn animate_player_by_physics(
-    mut physics_query: Query<(&PlayerPhysics, &mut AnimationPlayer, &mut AnimationTransitions)>,
+    // クエリに LinearVelocity を追加します
+    mut physics_query: Query<(&PlayerPhysics, &LinearVelocity, &mut AnimationPlayer, &mut AnimationTransitions)>,
     animations: Res<Animations>,
     mut current_animation: Local<Option<usize>>,
 ) {
-    // 物理コンポーネント（physics）は読み取り専用（&PlayerPhysics）なので、物理の計算を汚しません！
-    for (physics, mut player, mut transitions) in &mut physics_query {
+    for (physics, linear_velocity, mut player, mut transitions) in &mut physics_query {
         let target_animation = if physics.is_float_mode {
-            3 // Hang（浮遊）
+            3 // Hang
         } else if !physics.is_grounded {
             2 // Jump
-        } else if physics.velocity.length_squared() > 0.01 {
+        } else if linear_velocity.0.length_squared() > 0.01 { // linear_velocity を参照
             1 // Run
         } else {
             0 // Idle

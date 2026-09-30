@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use avian3d::prelude::*;
 use crate::camera::PrimaryCamera;
 use crate::drone::Drone;
 use crate::player::{Player, PlayerPhysics, MODEL_PATH, Model};
@@ -33,6 +34,8 @@ pub fn setup(
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
+        RigidBody::Static,
+        Collider::half_space(Vec3::Y),
     ));
 
 
@@ -72,6 +75,8 @@ pub fn setup(
             Mesh3d(meshes.add(Cuboid::from_size(size))),
             MeshMaterial3d(obstacle_color.clone()),
             Transform::from_translation(pos),
+            RigidBody::Static,
+            Collider::cuboid(size.x, size.y, size.z),
             TargetObstacle { size },
         ));
     }
