@@ -13,7 +13,7 @@ pub const PLAYER_MAX_SPEED: f32 = 20.0;
 pub const AIR_CONTROL_SPEED: f32 = 22.0;
 pub const NORMAL_JUMP_FORCE: f32 = 5.0; // Avian3Dの重力に合わせて適切な数値（12.0）に調整
 pub const WIRE_JUMP_FORCE: f32 = 8.0;
-pub const MODEL_PATH: &str = "model/test/test.glb";
+pub const MODEL_PATH: &str = "models/test/test.glb";
 
 // コンポーネント定義
 #[derive(Resource)]
