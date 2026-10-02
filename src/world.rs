@@ -48,13 +48,9 @@ pub fn setup(
 
     // ドローンの生成
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(0.3))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.8, 1.0),
-            ..default()
-        })),
-        Transform::from_xyz(0.8, 2.0, -0.8),
-        Drone,
+            Drone,
+            LockedAxes::ROTATION_LOCKED,
+            WorldAssetRoot(asset_server.load("models/drone.glb#Scene0")),
     ));
 
     // 障害物（TargetObstacle）の生成
